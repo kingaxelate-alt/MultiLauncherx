@@ -122,6 +122,10 @@ class MainActivity : Activity() {
         val n = selected.size
 
         thread {
+            if (split) {
+                runSu("settings put global enable_freeform_support 1")
+                runSu("settings put global force_resizable_activities 1")
+            }
             for ((i, pkg) in selected.withIndex()) {
                 if (useRoot) {
                     val comp = packageManager.getLaunchIntentForPackage(pkg)
@@ -132,7 +136,6 @@ class MainActivity : Activity() {
                     Thread.sleep(delayMs)
 
                     if (split) {
-                        // landscape: แบ่งซ้าย-ขวา / portrait: แบ่งบน-ล่าง
                         val l: Int; val t: Int; val r: Int; val b: Int
                         if (w >= h) {
                             l = w * i / n; t = 0; r = w * (i + 1) / n; b = h
@@ -146,7 +149,13 @@ class MainActivity : Activity() {
                                 if (taskId == null) Thread.sleep(500)
                             }
                         }
-                        taskId?.let { runSu("am task resize $it $l $t $r $b") }
+                        taskId?.let { id ->
+                            val out = runSu("am task resize $id $l $t $r $b 2>&1")
+                            if (out.contains("Exception") || out.contains("Error")
+                                || out.contains("usage", true)) {
+                                runSu("am task resize $id $l,$t,$r,$b 2>&1")
+                            }
+                        }
                     }
                 } else {
                     packageManager.getLaunchIntentForPackage(pkg)?.let {
@@ -163,9 +172,13 @@ class MainActivity : Activity() {
     }
 
     private fun findTaskId(pkg: String): String? {
-        val out = runSu("dumpsys activity activities")
-        val re = Regex("#(\\d+) [^\\n]*A=(?:\\d+:)?" + Regex.escape(pkg) + "\\b")
-        return re.find(out)?.groupValues?.get(1)
+        val q = Regex.escape(pkg)
+        // Android 10: am stack list -> "taskId=12: com.pkg/..."
+        val s = runSu("am stack list")
+        Regex("taskId=(\\d+): $q/").find(s)?.let { return it.groupValues[1] }
+        // สำรอง: dumpsys -> "#12 A=com.pkg"
+        val d = runSu("dumpsys activity activities")
+        return Regex("#(\\d+) [^\\n]*A=(?:\\d+:)?$q\\b").find(d)?.groupValues?.get(1)
     }
 
     private fun runSu(cmd: String): String = try {
