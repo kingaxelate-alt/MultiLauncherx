@@ -1,10 +1,12 @@
 package com.example.multilauncher
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
+import android.util.DisplayMetrics
 import android.view.ViewGroup
 import android.widget.*
 import kotlin.concurrent.thread
@@ -14,6 +16,7 @@ class MainActivity : Activity() {
     private lateinit var listBox: LinearLayout
     private lateinit var delayInput: EditText
     private lateinit var rootCheck: CheckBox
+    private lateinit var splitCheck: CheckBox
     private val checks = mutableListOf<Pair<String, CheckBox>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,13 +39,19 @@ class MainActivity : Activity() {
 
         delayInput = EditText(this).apply {
             hint = "Delay seconds"
-            setText("1")
+            setText("3")
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         root.addView(delayInput)
 
-        rootCheck = CheckBox(this).apply { text = "Root mode"; isChecked = false }
+        rootCheck = CheckBox(this).apply { text = "Root mode"; isChecked = true }
         root.addView(rootCheck)
+
+        splitCheck = CheckBox(this).apply {
+            text = "Split screen (freeform windows, needs Root)"
+            isChecked = true
+        }
+        root.addView(splitCheck)
 
         root.addView(Button(this).apply {
             text = "REFRESH"
@@ -101,25 +110,62 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Select at least one app", Toast.LENGTH_SHORT).show()
             return
         }
-        val delayMs = (delayInput.text.toString().toLongOrNull() ?: 1L) * 1000
+        val delayMs = (delayInput.text.toString().toLongOrNull() ?: 3L) * 1000
         val useRoot = rootCheck.isChecked
+        val split = useRoot && splitCheck.isChecked
+
+        val dm = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealMetrics(dm)
+        val w = dm.widthPixels
+        val h = dm.heightPixels
+        val n = selected.size
 
         thread {
-            for (pkg in selected) {
+            for ((i, pkg) in selected.withIndex()) {
                 if (useRoot) {
-                    runSu("monkey -p $pkg -c android.intent.category.LAUNCHER 1")
+                    val comp = packageManager.getLaunchIntentForPackage(pkg)
+                        ?.component?.flattenToShortString()
+                    if (comp == null) continue
+                    val mode = if (split) "--windowingMode 5 " else ""
+                    runSu("am start $mode-n $comp")
+                    Thread.sleep(delayMs)
+
+                    if (split) {
+                        // landscape: แบ่งซ้าย-ขวา / portrait: แบ่งบน-ล่าง
+                        val l: Int; val t: Int; val r: Int; val b: Int
+                        if (w >= h) {
+                            l = w * i / n; t = 0; r = w * (i + 1) / n; b = h
+                        } else {
+                            l = 0; t = h * i / n; r = w; b = h * (i + 1) / n
+                        }
+                        var taskId: String? = null
+                        repeat(6) {
+                            if (taskId == null) {
+                                taskId = findTaskId(pkg)
+                                if (taskId == null) Thread.sleep(500)
+                            }
+                        }
+                        taskId?.let { runSu("am task resize $it $l $t $r $b") }
+                    }
                 } else {
                     packageManager.getLaunchIntentForPackage(pkg)?.let {
-                        it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         startActivity(it)
                     }
+                    Thread.sleep(delayMs)
                 }
-                Thread.sleep(delayMs)
             }
             runOnUiThread {
                 Toast.makeText(this, "Done", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun findTaskId(pkg: String): String? {
+        val out = runSu("dumpsys activity activities")
+        val re = Regex("#(\\d+) [^\\n]*A=(?:\\d+:)?" + Regex.escape(pkg) + "\\b")
+        return re.find(out)?.groupValues?.get(1)
     }
 
     private fun runSu(cmd: String): String = try {
